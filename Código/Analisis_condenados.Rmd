@@ -1,0 +1,597 @@
+---
+title: "Análisis personas condenadas años 2013-2019"
+author: "Laura Esteban de Pedro"
+output:
+
+  html_document:
+    fig_height: 5
+    fig_width: 7
+    number_sections: yes
+    theme: journal
+    toc: yes
+    toc_depth: 1
+    font-size: 16pt
+  
+always_allow_html: yes
+---
+<br></br>
+
+
+Una vez procesados los datos de las personas condenadas en python con los datos desde 2013 hasta 2019.
+
+En primer lugar, se incluyen las librerías que se utilizarán en el análisis, se establece el directorio raíz y se eliminan las variables de entorno.
+
+
+
+Se realiza un estudio sobre los perfiles de las personas condenadas desde el año 2013 al 2019, a través de la información de la comunidad autónoma donde se produjo el crimen y la edad y el sexo del condenado. Se intentará identificar ciertos patrones que a simple vista son más difíciles de apreciar. 
+Los datos se obtienen del fichero datos_condenados.csv de la carpeta Datos Procesados.
+Se va a utilizar métodos de aprendizaje automático no supervisado para encontrar los distintos perfiles, a priori desconocidos.
+Para ello se van a utilizar 3 tipos de clúster para poder compararlos más tarde:
+
+    •	Kmeans: agrupa las observaciones en K clusters distintos, donde el número K se determina previamente a través del método del codo o silhouette.
+
+    •	Kmedoids: es un método de clustering muy similar a K-means en cuanto a que ambos agrupan las observaciones en K clusters. La diferencia es que, en K-medoids, cada cluster está representado por una observación presente en el cluster (medoid), mientras que en K-means cada cluster está representado por su centroide, que se corresponde con el promedio de todas las observaciones del cluster pero con ninguna en particular. K-medoids es un método de clustering más robusto que K-means, por lo es más adecuado cuando el set de datos contiene outliers o ruido.	
+
+    •	HClust: es un método basado en el cluster jerárquico, el cual construye un árbol que representa las relaciones de similitud entre los distintos elementos.
+    
+Todos los métodos de clustering tienen que determinar qué distancia se emplea dentro del contexto del clustering como cuantificación de la similitud o diferencia entre observaciones.
+En este caso se utilizará la distancia euclídea que define la longitud del segmento que une 2 observaciones.
+
+
+
+
+```{r setup}
+#knitr::opts_knit$set(root.dir = '../')
+```
+
+```{r}
+rm(list=ls())
+getwd()
+```
+
+# Librerias
+```{r}
+
+library(dummies)
+library(factoextra)
+library(cluster)
+library(ggpubr)
+library(ggplot2)
+
+```
+
+# Carga de datos
+
+Se obtienen los datos del fichero datos_condenados.csv de la carpeta Datos Procesados, desglosados por comunidades, edad y sexo
+```{r}
+
+
+datos_condenados=read.csv2("./Datos/Datos Procesados/datos_condenados.csv",
+                     stringsAsFactors = FALSE,
+                     dec = ".",
+                     sep = ';',
+                     encoding = 'UTF-8')
+
+
+
+
+#Revisión basica del dataset
+dim(datos_condenados)
+str(datos_condenados)
+summary(datos_condenados)
+head(datos_condenados)
+tail(datos_condenados)
+
+
+
+```
+
+# Análisis exploratorio de datos
+
+Se analizan los condenados por sexo
+```{r}
+
+
+datos_condenados_sexo <- subset(datos_condenados,subset=c(Comunidades == "Total" & Edad == "Total" & Sexo !="Total"))
+
+ggplot(datos_condenados_sexo, aes(Anio, Numero_Condenados, fill = Sexo)) + 
+geom_bar(stat = "identity") +
+ggtitle("Condenados por sexo") +
+theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.4),legend.position = "right")
+
+
+```
+Se analizan los condenados por edad
+```{r}
+
+
+datos_condenados_edad <- subset(datos_condenados,subset=c(Comunidades == "Total" & Sexo == "Total" & Edad !="Total"))
+
+ggplot(datos_condenados_edad, aes(Anio, Numero_Condenados, fill = Edad)) + 
+geom_bar(stat = "identity") +
+ggtitle("Condenados por edad") +
+theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.4),legend.position = "right")
+
+
+```
+Se analizan los condenados por comunidad autónoma
+```{r}
+
+
+datos_condenados_comunidades <- subset(datos_condenados,subset=c(Comunidades != "Total" & Sexo == "Total" & Edad =="Total"))
+
+ggplot(datos_condenados_comunidades, aes(Anio, Numero_Condenados, fill = Comunidades)) + 
+geom_bar(stat = "identity") +
+ggtitle("Condenados por comunidades") +
+theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.4),legend.position = "right")
+
+
+```
+
+Se analizan los condenados por sexo y edad
+```{r}
+
+
+datos_condenados_sexo_edad <- subset(datos_condenados,subset=c(Comunidades == "Total" & Sexo != "Total" & Edad !="Total"))
+
+ggplot(datos_condenados_sexo_edad, aes(Edad, Numero_Condenados, fill = Sexo)) + 
+geom_bar(stat = "identity") +
+ggtitle("Condenados por sexo y edad") +
+theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.4),legend.position = "right")
+
+
+```
+
+
+# Formateo y tratamiento de los datos
+
+Se formatean las columnas Comunidades, Edad y Sexo como factores
+
+```{r}
+
+datos_condenados <- datos_condenados[datos_condenados$Comunidades != "Total" & datos_condenados$Edad != "Total" & datos_condenados$Sexo != "Total", ] 
+
+factor.columns <- c("Comunidades","Edad","Sexo")
+datos_condenados[factor.columns] <- lapply(datos_condenados[factor.columns], factor)
+str(datos_condenados)
+
+```
+
+Se mira el porcentaje de nulos de cada una de las columnas
+```{r}
+
+#Se mira el porcentaje de nulos de cada una de las columnas y se analizan cada uno de ellos
+apply(is.na(datos_condenados),2,sum) / nrow(datos_condenados)*100
+
+```
+
+
+
+
+Se convierten los datos categóricos en variables dummies para que todas las variables estén representadas por un valor numérico.
+```{r}
+
+datos_condenados_dummies <- dummy.data.frame(datos_condenados,dummy.class="factor")
+
+datos_condenados_dummies
+
+
+```
+
+
+
+Se van analizar los distintos perfiles a lo largo de los años, con lo cual se coge como muestra sólo los datos del año 2013
+```{r}
+
+#Como muestra solo se escoge el año  para el 2013
+datos_condenados_dummies_2013 <- subset(datos_condenados_dummies,subset=c(Anio == 2013))
+
+datos_condenados_dummies_2013
+
+#No necesitamos la variable año
+datos_condenados_dummies_2013$Anio=NULL
+
+
+```
+
+
+# Clustering
+
+Se analizan el número de clústers necesarios para identificar los distintos perfiles
+
+## Análisis del número de clústers
+
+### KMEANS
+```{r}
+
+#Metodo del codo KMEANS
+fviz_nbclust(datos_condenados_dummies_2013, kmeans, method = "wss") + geom_vline(xintercept = 3, linetype = 2)
+#Metodo de la silhouette KMEANS
+fviz_nbclust(datos_condenados_dummies_2013, kmeans, method = "silhouette")
+
+```
+### KMEDOIDS
+```{r}
+
+#Metodo del codo KMEDOIDS
+fviz_nbclust(datos_condenados_dummies_2013, pam, method = "wss") + geom_vline(xintercept = 3, linetype = 2)
+#Metodo de la silhouette KMEDOIDS
+fviz_nbclust(datos_condenados_dummies_2013, pam, method = "silhouette")
+
+```
+
+### HCLUST
+```{r}
+
+#Metodo del codo HCLUST
+fviz_nbclust(datos_condenados_dummies_2013, hcut, method = "wss",k.max=10, hc_method = "complete")  + geom_vline(xintercept = 4, linetype = 2)
+#Metodo de la silhouette HCLUST
+fviz_nbclust(datos_condenados_dummies_2013, hcut, method = "silhouette",k.max=10, hc_method = "complete") 
+
+```
+Dado que el método del codo no se aprecia bien el número de clusters seleccionados, se escoge el método de la silhouette para determinar los clusters. En este caso, para los 3 modelos, el número de clusters son 2.
+```{r}
+
+#Se definen el número de clusters
+NUM_CLUSTERS=2
+set.seed(1200)
+
+```
+
+## Normalización
+
+Se normalizan los datos para que todas las variables tengan el mismo peso en el análisis
+```{r}
+#Se normalizan los datos
+datos_condenados_dummies_2013_nor=scale(datos_condenados_dummies_2013)
+
+
+```
+
+
+## Creación de modelos
+
+Se crean los 3 modelos de clúster y se guarda el grupo de la segmentación al que pertenece cada registro en las distintas columnas del dataset datos_condenados_dummies_2013 (Segmentos_kmeans, Segmentos_kmdeoids, Segmentos_hclust)
+
+Se muestra el deograma generado por el modelo de HClust
+
+### KMEANS
+
+```{r}
+
+#KMEANS
+Modelo_kmeans=kmeans(datos_condenados_dummies_2013_nor,NUM_CLUSTERS)
+datos_condenados_dummies_2013$Segmentos_kmeans=Modelo_kmeans$cluster
+
+```
+
+### KMEDOIDS
+
+```{r}
+
+#KMEDOIDS
+Modelo_kmedoids=pam(datos_condenados_dummies_2013_nor,NUM_CLUSTERS, metric = "euclidean")
+datos_condenados_dummies_2013$Segmentos_kmdeoids=Modelo_kmedoids$cluster
+
+
+```
+
+### HCLUST
+
+
+```{r}
+
+#HCLUST
+distancia <- dist(datos_condenados_dummies_2013_nor, method = "euclidean")
+Modelo_hclust<- hclust(distancia, method = "complete")
+datos_condenados_dummies_2013$Segmentos_hclust = cutree(Modelo_hclust, k = NUM_CLUSTERS)
+plot(Modelo_hclust)
+
+head(datos_condenados_dummies_2013)
+
+```
+
+### Tamaños de los clústers
+
+Se obtienen los tamaños de cada cluster para cada uno de los 3 modelos.
+```{r}
+
+#Tamaños de los clusters
+table(datos_condenados_dummies_2013$Segmentos_kmeans)
+table(datos_condenados_dummies_2013$Segmentos_kmdeoids)
+table(datos_condenados_dummies_2013$Segmentos_hclust)
+
+```
+
+### Perfiles de cada modelo
+
+Se obtienen los perfiles de cada grupo de cada uno de los modelos analizados. 
+Para el año 2013 se observan los siguientes perfiles:
+
+    KMEANS:
+ --------------------------------------------------------------------------------------------------------------------
+ Grupo 1: Perfil repartido por todas las comunidades menos en Valencia, con un porcentaje  menor en Ceuta y Melilla. El                mismo procentaje de hombres y mujeres, de todas las edades menos en las franjas de los 61 a 70 años.
+ Grupo 2: Perfil repartido por todas las comunidades por igual, con un porcentaje menor en Ceuta y Melilla. El                         mismo procentaje de hombres y mujeres, de todas las edades con un elevado porcentaje del 70% en las edades                   comprendidas entre los 61 y 70 años.
+
+ --------------------------------------------------------------------------------------------------------------------
+```{r}
+## Group.1   ComunidadesAndalucia    ComunidadesAragon   ComunidadesAsturias   ComunidadesBaleares
+##  1	        5.555556	                5.555556	            5.555556	            5.555556	
+##  2	        3.703704	                3.703704	            3.703704	            3.703704
+
+## ComunidadesCanarias   ComunidadesCantabria    ComunidadesCastilla_Leon    ComunidadesCastilla_Mancha
+## 5.555556	            5.555556	                5.555556	                5.555556	
+## 3.703704	            3.703704	                3.703704	                3.703704
+
+## ComunidadesCatalunia    ComunidadesCeuta_Melilla    ComunidadesExtremadura    ComunidadesGalicia
+## 5.555556	                11.111111	                5.555556	                    5.555556	
+## 3.703704	                7.407407	                3.703704	                    3.703704
+
+## ComunidadesMadrid   ComunidadesMurcia   ComunidadesNavarra    ComunidadesPais_vasco   ComunidadesRioja
+## 5.555556	            5.555556	            5.555556	        5.555556	                5.555556	
+## 3.703704	            3.703704	            3.703704	        3.703704	                3.703704	
+
+## ComunidadesValencia   SexoHombres   SexoMujeres   Edad18_20_anios   Edad21_25_anios   Edad26_30_anios
+## 0.00000	                50	            50	        12.500000	        12.500000	        12.500000	
+## 33.33333	              50	            50	        3.703704	        3.703704	        3.703704
+
+
+## Edad31_35_anios   Edad36_40_anios   Edad41_50_anios   Edad51_60_anios   Edad61_70_anios   Edadmayor_70_anios
+## 12.500000	        12.500000	        12.500000	        12.500000	        0.00000	            12.500000	
+## 3.703704	        3.703704	        3.703704	        3.703704	        70.37037	          3.703704
+
+
+## Numero_Condenados   Segmentos_kmeans
+## 655.0729	            1
+## 576.2037	            2
+
+```
+
+    KMEDOIDS:
+ --------------------------------------------------------------------------------------------------------------------
+ Grupo 1: Perfil repartido por todas las comunidades por igual, con un mayor porcentaje en Ceuta y Melilla. Predomina un               mayor porcentaje   de hombres de todas las edades, excepto mayores de 70 años, aunque predominan las edades de               entre 26 y 30 años.
+ Grupo 2: Perfil repartido por todas las comunidades por igual, con un mayor porcentaje en Ceuta y Melilla. Predomina un               mayor porcentaje   de mujeres de todas las edades, excepto las edades comprendidas entre 26 y 30 años, aunque                predomina la edad mayor de 70 años.
+
+ --------------------------------------------------------------------------------------------------------------------
+```{r}
+## Group.1   ComunidadesAndalucia    ComunidadesAragon   ComunidadesAsturias   ComunidadesBaleares
+## 1	        5.263158	                5.263158	            5.263158	            5.263158	
+## 2	        5.263158	                5.263158	            5.263158	            5.263158	
+
+## ComunidadesCanarias   ComunidadesCantabria    ComunidadesCastilla_Leon    ComunidadesCastilla_Mancha
+## 5.263158	            5.263158	                5.263158	                5.263158	
+## 5.263158	            5.263158	                5.263158	                5.263158	
+
+## ComunidadesCatalunia    ComunidadesCeuta_Melilla    ComunidadesExtremadura    ComunidadesGalicia
+## 5.263158	                10.52632	                    5.263158	                5.263158	
+## 5.263158	                10.52632	                    5.263158	                5.263158	
+
+## ComunidadesMadrid   ComunidadesMurcia   ComunidadesNavarra    ComunidadesPais_vasco   ComunidadesRioja
+## 5.263158	            5.263158	            5.263158	            5.263158	            5.263158	
+## 5.263158	            5.263158	            5.263158	            5.263158	            5.263158	
+
+## ComunidadesValencia   SexoHombres   SexoMujeres   Edad18_20_anios   Edad21_25_anios   Edad26_30_anios
+## 5.263158	            88.88889	        11.11111	    11.11111	        11.11111	        22.22222	
+## 5.263158	            11.11111	        88.88889	    11.11111	        11.11111	        0.00000	
+
+## Edad31_35_anios   Edad36_40_anios   Edad41_50_anios   Edad51_60_anios   Edad61_70_anios   Edadmayor_70_anios
+## 11.11111	            11.11111	        11.11111	        11.11111	        11.11111	        0.00000	
+## 11.11111	            11.11111	        11.11111	        11.11111	        11.11111	        22.22222	
+
+## Numero_Condenados   Segmentos_kmdeoids
+## 1155.9064	            1
+## 129.3333	              2
+```
+
+    HCLUST: 
+ --------------------------------------------------------------------------------------------------------------------
+ Grupo 1: Perfil centrado en Andalucía con el mismo procentaje de hombres y mujeres por igual, repartido entre todas las               edades.
+ Grupo 2: Perfil repartido por igual en todas las comunidades excepto en Andalucía con el mismo procentaje de hombres y                mujeres y repartido entre todas las edades.
+
+ --------------------------------------------------------------------------------------------------------------------
+```{r}
+## Group.1 ComunidadesAndalucia    ComunidadesAragon     ComunidadesAsturias   ComunidadesBaleares
+## 1	        100	                    0.000000	            0.000000	            0.000000	
+## 2	        0	                      5.555556	            5.555556	            5.555556
+
+## ComunidadesCanarias   ComunidadesCantabria    ComunidadesCastilla_Leon    ComunidadesCastilla_Mancha
+## 0.000000	            0.000000	                0.000000	                0.000000	
+## 5.555556	            5.555556	                5.555556	                5.555556
+
+## ComunidadesCatalunia    ComunidadesCeuta_Melilla    ComunidadesExtremadura    ComunidadesGalicia
+## 0.000000	                0.00000	                    0.000000	                0.000000	
+## 5.555556	                11.11111	                  5.555556	                5.555556	
+
+## ComunidadesMadrid   ComunidadesMurcia   ComunidadesNavarra    ComunidadesPais_vasco   ComunidadesRioja
+## 0.000000	            0.000000	        0.000000	            0.000000	                0.000000	
+## 5.555556	            5.555556	        5.555556	            5.555556	                5.555556
+
+## ComunidadesValencia   SexoHombres   SexoMujeres   Edad18_20_anios   Edad21_25_anios   Edad26_30_anios
+## 0.000000	            50	            50	            11.11111	        11.11111	        11.11111	
+## 5.555556	            50	            50	            11.11111	        11.11111	        11.11111
+
+## Edad31_35_anios   Edad36_40_anios   Edad41_50_anios   Edad51_60_anios   Edad61_70_anios   Edadmayor_70_anios
+## 11.11111	        11.11111	        11.11111	        11.11111	        11.11111	        11.11111	
+## 11.11111	        11.11111	        11.11111	        11.11111	        11.11111	        11.11111	
+
+## Numero_Condenados   Segmentos_hclust
+## 2446.2778	            1
+## 542.4167	              2
+
+```
+
+```{r}
+
+df_kmeans <-aggregate(datos_condenados_dummies_2013[,c(-32,-33)], by = list(datos_condenados_dummies_2013$Segmentos_kmeans), mean)
+
+df_kmdeoids <- aggregate(datos_condenados_dummies_2013[,c(-31,-33)], by = list(datos_condenados_dummies_2013$Segmentos_kmdeoids), mean)
+
+df_hclust <- aggregate(datos_condenados_dummies_2013[,c(-31,-32)], by = list(datos_condenados_dummies_2013$Segmentos_hclust), mean)
+
+
+df_kmeans[,c(-1, -31, -32)] <- lapply(df_kmeans[,c(-1, -31, -32)], function(x) x*100)
+df_kmdeoids[,c(-1, -31, -32)] <- lapply(df_kmdeoids[,c(-1, -31, -32)], function(x) x*100)
+df_hclust[,c(-1, -31, -32)] <- lapply(df_hclust[,c(-1, -31, -32)], function(x) x*100)
+
+df_kmeans
+df_kmdeoids
+df_hclust
+
+```
+
+## Automatización
+
+Se realiza el mismo proceso que se ha hecho con los datos de entrenamiento para el año 2013, pero esta vez con los datos de todos los años.
+```{r}
+NUM_CLUSTERS=2
+set.seed(1200)
+years=c(2013:2019)
+kmeans_list=list()
+kmedoids_list=list()
+hclust_list=list()
+for (i in 1:length(years)){
+  sprintf("PROCESANDO: %s",years[i])
+  datos_condenados_dummies_anio<- subset(datos_condenados_dummies,Anio==years[i])
+  #No necesito la variable año
+  datos_condenados_dummies_anio$Anio=NULL
+  #Normalizo los datos
+  datos_condenados_dummies_anio_nor=scale(datos_condenados_dummies_anio)
+  #Hay columnas con datos a 0, al normalizar salen NA. Lo vuelvo a poner a 0
+  datos_condenados_dummies_anio_nor[is.na(datos_condenados_dummies_anio_nor)] <- 0
+  
+  #KMEANS
+  Modelo_kmeans=kmeans(datos_condenados_dummies_anio_nor,NUM_CLUSTERS)
+  datos_condenados_dummies_anio$Segmentos_kmeans=Modelo_kmeans$cluster
+
+  
+  #KMEDOIDS
+  Modelo_kmedoids=pam(datos_condenados_dummies_anio_nor,NUM_CLUSTERS)
+  datos_condenados_dummies_anio$Segmentos_kmdeoids=Modelo_kmedoids$cluster
+
+  #HCLUST
+  distancia <- dist(datos_condenados_dummies_anio_nor, method = "euclidean")
+  Modelo_hclust<- hclust(distancia, method = "complete")
+  datos_condenados_dummies_anio$Segmentos_hclust = cutree(Modelo_hclust, k = NUM_CLUSTERS)
+  
+  #Incluyo columna con el año
+  datos_condenados_dummies_anio$Anio=years[i]
+  
+  #tamaños de los clusters
+  table(datos_condenados_dummies_anio$Segmentos_kmeans)
+  table(datos_condenados_dummies_anio$Segmentos_kmdeoids)
+  table(datos_condenados_dummies_anio$Segmentos_hclust)
+  
+  #guardo en la lista por numero de cluster cada tipo
+
+  kmeans_list[[i]]=aggregate(datos_condenados_dummies_anio[,c(-32,-33)],
+                                by =list(datos_condenados_dummies_anio$Segmentos_kmeans), mean)
+  
+  kmeans_list[[i]][,c(-1, -31, -32, -33)] <- lapply(kmeans_list[[i]][,c(-1, -31, -32, -33)], function(x) x*100)
+  
+  kmedoids_list[[i]]=aggregate(datos_condenados_dummies_anio[,c(-31,-33)],
+                                  by = list(datos_condenados_dummies_anio$Segmentos_kmdeoids), mean)
+  
+  kmedoids_list[[i]][,c(-1, -31, -32, -33)] <- lapply(kmedoids_list[[i]][,c(-1, -31, -32, -33)], function(x) x*100)
+  
+  hclust_list[[i]]=aggregate(datos_condenados_dummies_anio[,c(-31,-32)],
+                        by = list(datos_condenados_dummies_anio$Segmentos_hclust), mean)
+  
+  hclust_list[[i]][,c(-1, -31, -32, -33)] <- lapply(hclust_list[[i]][,c(-1, -31, -32, -33)], function(x) x*100)
+
+}
+
+
+print(kmeans_list)
+print(kmedoids_list)
+print(hclust_list)
+
+```
+
+
+
+## Validación KMEANS
+
+```{r}
+
+km_clusters <- eclust(x = datos_condenados_dummies_2013_nor, FUNcluster = "kmeans", k = 2, seed = 123, 
+                      hc_metric = "euclidean", nstart = 50, graph = FALSE)
+p1 <- fviz_cluster(object = km_clusters, geom = "point", ellipse.type  = "norm",
+                   palette = "jco") +
+      theme_classic() + theme(legend.position = "none") 
+
+p2 <- fviz_silhouette(sil.obj = km_clusters, print.summary = FALSE,
+                      palette = "jco", ggtheme = theme_classic()) +
+      theme(legend.position = "none")
+
+ggarrange(p1, p2)
+```
+
+## Validación KMEDOIDS
+
+```{r}
+
+km_clusters <- eclust(x = datos_condenados_dummies_2013_nor, FUNcluster = "pam", k = 2, seed = 123, 
+                      hc_metric = "euclidean", graph = FALSE)
+p1 <- fviz_cluster(object = km_clusters, geom = "point", ellipse.type  = "norm",
+                   palette = "jco") +
+      theme_classic() + theme(legend.position = "none") 
+
+p2 <- fviz_silhouette(sil.obj = km_clusters, print.summary = FALSE,
+                      palette = "jco", ggtheme = theme_classic()) +
+      theme(legend.position = "none")
+
+ggarrange(p1, p2)
+```
+
+## Validación HCLUST
+```{r}
+
+
+km_clusters <- eclust(x = datos_condenados_dummies_2013_nor, FUNcluster = "hclust", k = 2, seed = 123, 
+                      hc_metric = "euclidean", nstart = 50, graph = FALSE)
+p1 <- fviz_cluster(object = km_clusters, geom = "point", ellipse.type  = "norm",
+                   palette = "jco") +
+      theme_classic() + theme(legend.position = "none") 
+
+p2 <- fviz_silhouette(sil.obj = km_clusters, print.summary = FALSE,
+                      palette = "jco", ggtheme = theme_classic()) +
+      theme(legend.position = "none")
+
+ggarrange(p1, p2)
+```
+
+
+## CONCLUSIÓN
+
+El método Keams ha resultado ser el más fiable de los tres para poder definir los distintos perfiles de los condenados de España, ya que según se ve en el gráfico agrupa correctamente todos datos del mismo grupo. En cambio, tanto en el el Kmedoids como en el HClust no realiza una separación tan clara de los grupos, incluyendo en algunas ocasiones datos correspondientes al grupo contrario.
+
+    KMEANS:
+ --------------------------------------------------------------------------------------------------------------------
+ Grupo 1: Perfil repartido por todas las comunidades menos en Valencia, con un porcentaje  menor en Ceuta y Melilla. El                mismo procentaje de hombres y mujeres, de todas las edades menos en las franjas de los 61 a 70 años.
+ Grupo 2: Perfil repartido por todas las comunidades por igual, con un porcentaje menor en Ceuta y Melilla. El                         mismo procentaje de hombres y mujeres, de todas las edades con un elevado porcentaje del 70% en las edades                   comprendidas entre los 61 y 70 años.
+
+ --------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

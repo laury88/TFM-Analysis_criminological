@@ -1,0 +1,907 @@
+---
+title: "Análisis delitos años 1998-2010"
+author: "Laura Esteban de Pedro"
+output:
+  html_document:
+    fig_height: 5
+    fig_width: 7
+    number_sections: yes
+    theme: journal
+    toc: yes
+    toc_depth: 1
+    font-size: 16pt
+  pdf_document:
+    toc: yes
+    toc_depth: '1'
+always_allow_html: yes
+---
+<br></br>
+
+
+Una vez procesados los datos de los delitos en python con los datos desde 1998 hasta 2010, ya que son los años en los que se dispone de toda la información económica y educativa, se procede a analizar los datos relativos a los mismos.
+
+En primer lugar, se incluyen las librerías que se utilizarán en el análisis, se establece el directorio raíz y se eliminan las variables de entorno.
+
+
+
+```{r setup}
+##knitr::opts_knit$set(root.dir = '../')
+```
+
+```{r}
+rm(list=ls())
+getwd()
+```
+
+# Librerias
+```{r}
+library(knitr)
+library(GGally)
+library(ggplot2)
+library(plotly)
+library(MASS)
+library(glmnet)
+library(leaps)
+
+```
+
+# Carga de datos de los delitos 
+
+Se cargan los datos de los delitos y se hace una revisón básica del dataset
+
+```{r}
+
+
+datos_delitos=read.csv2("./Datos/Datos Procesados/datos_delitos.csv",
+                     stringsAsFactors = FALSE,
+                     dec = ".",
+                     sep = ';',
+                     encoding = 'UTF-8')
+
+#Revisión basica del dataset
+dim(datos_delitos)
+str(datos_delitos)
+summary(datos_delitos)
+head(datos_delitos)
+tail(datos_delitos)
+
+```
+
+# Formateo y tratamiento de los datos
+
+Se formatean las columnas Comunidades y tipo_delito como factor
+
+```{r}
+
+factor.columns <- c("Comunidades","Tipo_Delito")
+datos_delitos[factor.columns] <- lapply(datos_delitos[factor.columns], factor)
+str(datos_delitos)
+
+```
+
+
+Se buscan los valores nulos y eliminarlos o imputarlos con la librería missForest
+
+```{r}
+
+datos_delitos$Numero_habitantes[datos_delitos$Numero_habitantes == -1] <- NA
+datos_delitos$Numero_Delitos[datos_delitos$Numero_Delitos == -1] <- NA
+
+#Se mira el porcentaje de nulos de cada una de las columnas y se analizan cada uno de ellos
+apply(is.na(datos_delitos),2,sum) / nrow(datos_delitos)*100
+
+datos_delitos[which(is.na(datos_delitos$PIB)),]
+datos_delitos[which(is.na(datos_delitos$Gasto)),]
+datos_delitos[which(is.na(datos_delitos$Numero_habitantes)),]
+datos_delitos[which(is.na(datos_delitos$Numero_Parados)),]
+datos_delitos[which(is.na(datos_delitos$Inferior_2_etapa_Secundaria)),]
+datos_delitos[which(is.na(datos_delitos$X2_etapa_Secundaria)),]
+datos_delitos[which(is.na(datos_delitos$Educacion_Superior)),]
+datos_delitos[which(is.na(datos_delitos$Numero_Delitos)),]
+
+
+
+#Datos de Gasto válidos a partir de 1996
+#Datos de Numero habitantes válidos a partir de 1996, sin contar 1997
+#Datos de educación válidos a partir de 2002
+#Datos de delitos válidos a partir de 1998
+
+
+```
+Resultado:
+  * Datos de Gasto válidos a partir de 1996
+  * Datos de Numero habitantes válidos a partir de 1996, sin contar 1997
+  * Datos de educación válidos a partir de 2002
+  * Datos de delitos válidos a partir de 1998
+
+
+
+Dado que nos faltan bastantes datos, como los datos de educación que no los tenemos anterioires al año 2002, no merece la pena imputar los valores con el algoritmo missforest. Se analiza únicamente los datos a partir del año 2002
+```{r}
+
+#Dado que nos faltan bastantes datos, como los datos de educación que no los tenemos anterioires al año 2002, no merece la pena imputar los valores con el algoritmo miisforest. Se analiza únicamente los datos a partir del año 2002
+datos_delitos <- subset(datos_delitos,subset=c(Anio >= 2002))
+
+#Una vez eliminados los registros, se mira el porcentaje de nulos de cada una de las columnas
+apply(is.na(datos_delitos),2,sum) / nrow(datos_delitos)*100
+
+```
+
+# Análisis exploratorio de datos
+
+
+Se realiza una inspección por variables de la distribución de la tasa de delitos en función de cada atributo visualmente. 
+
+```{r}
+
+ggpairs(subset(datos_delitos,subset=c(Comunidades == "Total" & Tipo_Delito == "Total")), columns = c(13,2,3,4))
+ggpairs(subset(datos_delitos,subset=c(Comunidades == "Total" & Tipo_Delito == "Total")), columns = c(13,2,7))
+ggpairs(subset(datos_delitos,subset=c(Comunidades == "Total" & Tipo_Delito == "Total")), columns = c(13,2,8,9,10))
+#ggpairs(subset(datos_delitos, select = -c(Comunidades, Tipo_Delito) ))
+```
+Observaciones de los gráficos de cada una de las variables del data frame sobre la variable de la tasa de delitos:
+
+
+ * Los gráficos sobre las variables Anio, PIB y Gasto se puede deducir decir que son relevantes ya que tienen una cierta tendencia de que cuando crece una de estas variables influye positivamente en la tasa de delitos.
+
+ * Con el gráfico sobre la tasa del paro no se puede decir lo mismo. No se ve que haya una relación lineal sobre la variable de de la tasa de delitos.
+
+ * Sobre los gráficos de educación, también se ve que tiene una cierta dependencia negativa en el caso de la variable Inferior_2_etapa_Secundaria y una dependencia lineal positiva con respecto a las otras dos variables: X2_etapa_Secundaria, Educacion_Superior.
+
+
+
+Una vez realizada la inspección por variables se comienza con el análisis del conjunto de datos.
+En primer lugar, se hace un análisis de la evolución de la tasa de delitos por años y comunidades autónomas para todos los tipos de delitos.
+
+
+```{r}
+
+datos_delitos_anio <- subset(datos_delitos,subset=c(Tipo_Delito == "Total" & Comunidades!="Total"))
+
+ggplot(datos_delitos_anio, aes(x=Anio, y=Tasa_Delitos, colour=Comunidades, group=Comunidades)) +
+geom_line() +
+ggtitle("Evolución tasa delitos por años y Comunidades")+
+theme(plot.title = element_text(hjust = 0.5))+
+ylab("Tasa delitos")
+
+
+
+```
+
+Resultados: Se puede apreciar que la mayoría de las comunidades tienen una tendencia a aumentar la tasa de delitos, aunque se ve un cierto aplanamiento de la curva a partir del año 2008. Ceuta y Melilla se alejan un poco de la media del resto de comunidades siendo las que menos delitos registran.
+
+
+
+## Evolución de los delitos por años y tipo de delito
+
+En el siguiente gráfico se visualiza la evolución de los delitos por años y tipo de delitos para todas las comunidades autónomas.
+
+```{r}
+
+datos_delitos_anio <- subset(datos_delitos,subset=c(Comunidades == "Total" & Tipo_Delito!="Total"))
+
+ggplot(datos_delitos_anio, aes(x=Anio, y=Numero_Delitos, colour=Tipo_Delito, group=Tipo_Delito)) +
+geom_line() +
+ggtitle("Evolución tasa delitos por años y Tipo de Delito")+
+theme(plot.title = element_text(hjust = 0.5))+
+ylab("Tasa delitos")
+
+
+
+
+```
+
+Resultados: En el gráfico se puede apreciar 3 grupos que parecen seguir el mismo comportamiento. 
+El primero de ellos que lo componen dos tipos de delitos que destacan claramente respecto al resto y que han crecido considerablemente desde 2006. Éstos son contra la seguridad colectiva y la seguridad vial, éste último añadido recientemente en 2008 como nuevo tipo de delito. 
+El segundo grupo se encuentra en la franja media compuesto por 4 tipos de delitos. 
+Por último, el tercer grupo se mantiene casi sin pendiente, manteniendo la misma tasa a lo largo de los años.
+
+
+
+A continuación, se amplían estos tres grupos para poder analizarlos más en detalle.
+
+```{r}
+
+
+datos_delitos_anio <- subset(datos_delitos,subset=c(Comunidades == "Total" & (Tipo_Delito == "Contra la seguridad colectiva" | Tipo_Delito == "Contra la seguridad vial")))
+
+ggplot(datos_delitos_anio, aes(x=Anio, y=Numero_Delitos, colour=Tipo_Delito, group=Tipo_Delito)) +
+geom_line() +
+ggtitle("Evolución tasa delitos por años y Tipo de Delito (1º grupo)")+
+theme(plot.title = element_text(hjust = 0.5))+
+ylab("Tasa delitos")
+
+
+```
+```{r}
+
+
+datos_delitos_anio <- subset(datos_delitos,subset=c(Comunidades == "Total" & (Tipo_Delito=="Otros delitos" | Tipo_Delito=="Hurtos" | Tipo_Delito=="Lesiones"| Tipo_Delito=="Contra el patrimonio y el orden socioeconomico")))
+
+ggplot(datos_delitos_anio, aes(x=Anio, y=Numero_Delitos, colour=Tipo_Delito, group=Tipo_Delito)) +
+geom_line() +
+ggtitle("Evolución tasa delitos por años y Tipo de Delito (2º grupo)")+
+theme(plot.title = element_text(hjust = 0.5))+
+ylab("Tasa delitos")
+
+
+```
+```{r}
+
+
+datos_delitos_anio <- subset(datos_delitos,subset=c(Comunidades == "Total" & Tipo_Delito!="Otros delitos" & Tipo_Delito!="Hurtos" & Tipo_Delito!="Lesiones"& Tipo_Delito!="Contra el patrimonio y el orden socioeconomico" & Tipo_Delito != "Contra la seguridad colectiva" & Tipo_Delito != "Contra la seguridad vial" & Tipo_Delito != "Total"))
+
+ggplot(datos_delitos_anio, aes(x=Anio, y=Numero_Delitos, colour=Tipo_Delito, group=Tipo_Delito)) +
+geom_line() +
+ggtitle("Evolución tasa delitos por años y Tipo de Delito (3º grupo)")+
+theme(plot.title = element_text(hjust = 0.5))+
+ylab("Tasa delitos")
+
+
+```
+
+
+Se muestra otro tipo de visualización para analizar la evolución de cada uno de los tipos de delitos a lo largo de los años.
+
+```{r}
+
+datos_delitos_anio <- subset(datos_delitos,subset=c(Comunidades == "Total" & Tipo_Delito!="Total"))
+
+ggplot(datos_delitos_anio, aes(Tasa_Delitos, Tipo_Delito, fill = Anio)) + 
+geom_bar(stat = "identity") +
+ggtitle("Tipo de delito por años") +
+theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.4),legend.position = "right")
+```
+
+
+##  Análisis de la tasa de paro y la tasa de delitos
+
+En la inspección de la variable tasa de delitos se ha visto que la tasa de paro no sigue una distribución lineal. A continuación, se va a analizar tanto la tasa de paro como la tasa de delitos siguen una distribución normal.
+
+
+```{r}
+datos_delitos_anio <- subset(datos_delitos,subset=c(Comunidades == "Total" & Tipo_Delito =="Total"))
+
+#Se ve que la variable tasa del paro no sigue una distribución lineal. 
+ggplot(datos_delitos_anio, aes(x=Tasa_Paro, y=Tasa_Delitos))+
+geom_point(shape=1)   +   
+geom_smooth(method=lm)
+
+
+#Se visualiza la densidad de la tasa de paro y la tasa de delitos para poder intuir si siguen una distribución normal
+plot_ly(x = density(datos_delitos_anio$Tasa_Paro)$x, y = density(datos_delitos_anio$Tasa_Paro)$y, mode = "lines", fill = "tozeroy", yaxis = "y2", name = "Density", title="Distribución datos paro")
+plot_ly(x = density(datos_delitos_anio$Tasa_Delitos)$x, y = density(datos_delitos_anio$Tasa_Delitos)$y, mode = "lines", fill = "tozeroy", yaxis = "y2", name = "Density", title="Distribución datos delito")
+
+
+#Se muestra el histograma de la dos variables
+plot_ly(x = datos_delitos_anio$Tasa_Paro, type = "histogram", name = "Histogram", title="Histograma datos paro")
+plot_ly(x = datos_delitos_anio$Tasa_Delitos, type = "histogram", name = "Histogram", title="Histograma datos delito")
+
+#Se muestra el gráfico de cuantiles y visualmente no se ve que tenga una dsitribución normal 
+qqnorm(datos_delitos_anio$Tasa_Paro)
+qqline(datos_delitos_anio$Tasa_Paro)
+
+#Se rechaza la hipótesis nula H0 ya que el p-valor, en este caso 0.0107 es menor que 0.05.
+shapiro.test(datos_delitos_anio$Tasa_Paro)
+
+#Se muestra el gráfico de cuantiles y visualmente no se ve que tenga una dsitribución normal 
+qqnorm(datos_delitos_anio$Tasa_Delitos)
+qqline(datos_delitos_anio$Tasa_Delitos)
+
+#Se rechaza la hipótesis nula H0 ya que el p-valor, en este caso 0.0107 es menor que 0.0478.
+shapiro.test(datos_delitos_anio$Tasa_Delitos)
+
+
+
+```
+Resultados: En este caso ninguna de las dos variables sigue una distribución normal.
+
+
+## Análisis de la varianza y el sesgo de cada una de las variables con respecto a la variable de tasa de delitos
+
+A continuación, se va a analizar la varianza y el sesgo de cada una de las variables con respecto a la variable de tasa de delitos.
+
+```{r}
+datos_delitos_anio <- subset(datos_delitos,subset=c(Comunidades == "Total" & Tipo_Delito =="Total" ))
+
+ggplot(datos_delitos_anio, aes(x=Anio, y=Tasa_Delitos))+ 
+geom_point(shape=1) +   
+ggtitle("Tasa de delitos por años") +
+geom_smooth(method=lm)
+
+ggplot(datos_delitos_anio, aes(x=PIB, y=Tasa_Delitos))+ 
+geom_point(shape=1) +   
+ggtitle("Tasa de delitos por PIB") +
+geom_smooth(method=lm)
+
+ggplot(datos_delitos_anio, aes(x=Gasto, y=Tasa_Delitos))+ 
+geom_point(shape=1) +   
+ggtitle("Tasa de delitos por gasto medio") +
+geom_smooth(method=lm)
+
+ggplot(datos_delitos_anio, aes(x=Inferior_2_etapa_Secundaria, y=Tasa_Delitos))+ 
+geom_point(shape=1) +  
+ggtitle("Tasa de delitos por nivel educativo inferior a la 2º etapa de secundaria") +
+geom_smooth(method=lm)
+
+ggplot(datos_delitos_anio, aes(x=X2_etapa_Secundaria, y=Tasa_Delitos))+ 
+geom_point(shape=1) +   
+ggtitle("Tasa de delitos por nivel educativo de 2º etapa de secundaria") +
+geom_smooth(method=lm)
+
+ggplot(datos_delitos_anio, aes(x=Educacion_Superior, y=Tasa_Delitos))+ 
+geom_point(shape=1) +   
+ggtitle("Tasa de delitos por nivel educativo de Educación Superior") +
+geom_smooth(method=lm)
+
+
+```
+Resultados: Todos ellos reflejan una alta varianza, y en alguno de ellos también se puede apreciar un alto sesgo como en los gráficos por PIB, por gasto medio y por nivel educativo de 2º etapa de secundaria.
+
+
+## Análisis por tipo de delito
+
+Por último se hace un análisis por tipo de delito para cada una de las variables para ver cómo se distribuye el tipo de delito en los siguientes factores.
+
+```{r}
+
+datos_delitos_anio <- subset(datos_delitos,subset=c(Comunidades == "Total" & Tipo_Delito!="Total"))
+
+
+ggplot(datos_delitos_anio, aes(Tipo_Delito, Tasa_Delitos, fill = PIB)) + 
+geom_bar(stat = "identity") +
+ggtitle("Tasa delitos por PIB") +
+theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.4),legend.position = "right")
+
+ggplot(datos_delitos_anio, aes(Tipo_Delito, Tasa_Delitos, fill = Gasto)) + 
+geom_bar(stat = "identity") +
+ggtitle("Tasa delitos por gasto medio") +
+theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.4),legend.position = "right")
+
+ggplot(datos_delitos_anio, aes(Inferior_2_etapa_Secundaria, Tasa_Delitos, fill = Tipo_Delito)) + 
+geom_bar(stat = "identity") +
+ggtitle("Tasa delitos por tasa de Educación Inferior a Secundaria") +
+theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.4),legend.position = "right")
+
+ggplot(datos_delitos_anio, aes(X2_etapa_Secundaria, Tasa_Delitos, fill = Tipo_Delito)) + 
+geom_bar(stat = "identity") +
+ggtitle("Tasa delitos por tasa de Educación Secundaria") +
+theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.4),legend.position = "right")
+
+ggplot(datos_delitos_anio, aes(Educacion_Superior, Tasa_Delitos, fill = Tipo_Delito)) + 
+geom_bar(stat = "identity") +
+ggtitle("Tasa delitos por tasa de Educación Superior") +
+theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.4),legend.position = "right")
+
+```
+
+
+# Modelo regresión lineal
+
+El objetivo es encontrar el modelo que permita predecir con mayor precisión la tasa de delitos de España haciendo uso de técnicas de selección de variables y modelos regularizados.
+
+Se debe de buscar un modelo cuya estructura sea lo más simple posible para que tenga una baja varianza, pero llegando a un equilibrio para que no suba demasiado el sesgo. Se intenta conseguir este equilibro estableciendo unos criterios estadísticos como los utilizados para este estudio:
+    •	R2 ajustado, que es capaz de explicar la variabilidad de la variable respecto a los predictores penalizando la complejidad del modelo.
+     •	Residual Sum of Squares RSS: la suma de cuadrados residuales es la suma de los cuadrados de los residuos. Es una medida de la discrepancia entre los datos y un modelo de estimación.
+    •	AIC: se basa en la verosimilitud penalizando la complejidad del modelo. 
+
+Sin embargo, lo que realmente permite cuantificar cómo de útil es un modelo no es el test error, por lo que es esta medida en la que hay que basarse para elegir entre modelos con diferente número de predictores. Generalmente, al hablar de test error se hace referencia al test mean square error (test-MSE), que equivale al test RSS dividido por el número de observaciones MSE=RSS / n.
+
+Se van a comparar los siguientes métodos de regresión: ordinary least squares (OLS) con todos los predictores, Subset Selection, Ridge, Lasso y Elastic Net.
+
+
+Antes de comenzar se obtienen los datos que nos interesan del dataframe. No se estudia el desglose por tipos de delitos, ya que los datos del PIB, el gasto medio y el paro sólo se encuentran a nivel de comunidades. Eliminamos esta variable porque no es influyente para el estudio.
+
+Se divide aleatoriamente el set de datos en dos grupos, uno se empleará para entrenar los modelos (datos_delitos_espana_train) y el otro para validarlos (datos_delitos_espana_test).
+
+
+
+```{r}
+
+#No se estudia el desglose por tipos de delitos, ya que los datos del PIB, el gasto medio y el paro sólo se encuentran a nivel de comunidades. Eliminamos esta variable porque no es influyente para el estudio
+datos_delitos_espana <- datos_delitos[datos_delitos$Comunidades != "Total" & datos_delitos$Tipo_Delito == "Total", ]  
+
+datos_delitos_espana$Comunidades <- NULL
+datos_delitos_espana$Tipo_Delito <- NULL
+datos_delitos_espana$Numero_Delitos <- NULL
+
+set.seed(1)
+indices_entrenamiento <- sample(x = 1:nrow(datos_delitos_espana),
+                                size = round(nrow(datos_delitos_espana) * (2/3)))
+# 2/3 de las observaciones
+indices_test <- (1:nrow(datos_delitos_espana))[-indices_entrenamiento]
+datos_delitos_espana_train <- datos_delitos_espana[indices_entrenamiento,]
+datos_delitos_espana_test <- datos_delitos_espana[indices_test,]
+
+
+```
+
+
+
+## Técnicas de selección de variables
+
+Se utilizan dos técnicas que posteriormente se van a comparar para ver cuál de ellas obtiene el mejor modelo. 
+
+ •	StepAIC del paquete MASS. Se utiliza para hacer selección de variables en un modelo de regresión.
+ •	Best Subset Selection del paquete leaps. Se usa cuando interesa encontrar subconjuntos de variables dependientes para optimizar las características de un modelo.
+
+
+
+
+### MODELO OLS 
+
+ StepAIC (paquete MASS)
+
+Automatiza la selección de modelos con la función step. Se elige la dirección both que empieza en el modelo base hasta el más complejo y luego realiza el proceso al revés, seleccionando por pasos el mejor modelo en función de los atributos elegidos usando el criterio AIC.
+
+
+```{r}
+
+fit0 <- lm(Tasa_Delitos~1,data=datos_delitos_espana)
+fit1 <- lm(Tasa_Delitos~Anio+PIB+Gasto+Numero_Parados+Numero_habitantes+Tasa_Paro+Inferior_2_etapa_Secundaria+X2_etapa_Secundaria+Educacion_Superior,data=datos_delitos_espana)
+
+step <- stepAIC(fit0,direction="both",scope=list(upper=fit1,lower=fit0))
+
+
+```
+
+```{r}
+step 
+
+```
+
+Se muestran los resultados
+
+```{r}
+
+step$anova
+
+```
+
+Se muestra el mejor modelo resultante
+
+```{r}
+
+step$call 
+
+```
+
+Se obtiene el valor del estadístico del mejor modelo resultante
+
+```{r}
+
+AIC(step)
+
+```
+
+Se analizan los datos del modelo obtenido 
+Con el valor de p-value < 2.2e-16 -se puede decir que existe relación lineal.
+El R2 nos indica que aproximadamente el 75% de la variabilidad en la variable Tasa_Delitos es explicada por las variables Anio, Gasto, Educacion_Superior, Tasa_Paro, X2_etapa_Secundaria, Numero_habitantes, Numero_Parados
+```{r}
+
+mod <- lm(formula = Tasa_Delitos ~ Anio + Gasto + Educacion_Superior + 
+    Tasa_Paro + X2_etapa_Secundaria + Numero_habitantes + Numero_Parados, data = datos_delitos_espana)
+
+summary(mod)
+
+
+```
+
+Se verifica el ajuste de este modelo, pintando sus residuos y verificando que sean normales, viendo su AIC. En este caso los residuos tienen un fuerte sesgo hacia la derecha que indica que el modelo no está siendo muy adecuado.
+
+```{r}
+anova(mod)
+
+hist(mod$residuals)
+qqnorm(mod$residuals)
+qqline(mod$residuals)
+
+shapiro.test(mod$residuals) 
+
+```
+
+OLS (regresión por mínimos cuadrados)
+
+```{r}
+
+modelo_OLS   <- lm(formula = Tasa_Delitos ~ Anio + Gasto + Educacion_Superior + Tasa_Paro + X2_etapa_Secundaria + Numero_habitantes + Numero_Parados, data = datos_delitos_espana_train)
+
+#Se crea una columna en el dataframe datos_delitos_espana con la predicción de la tasa de delitos del modelo para luego compararlo con el resto de modelos.
+Tasa_Delitos_Pred_OLS <- predict(modelo_OLS, datos_delitos_espana)
+datos_delitos_espana$Tasa_Delitos_Pred_OLS <- c(Tasa_Delitos_Pred_OLS)
+#datos_delitos_espana
+
+test_MSE_OLS <- mean((predict(modelo_OLS, datos_delitos_espana_test) - datos_delitos_espana_train$Tasa_Delitos)^2)
+test_MSE_OLS
+
+```
+### Best Subset Selection mediante k-cross-validation
+
+Los métodos conocidos como subset selection de la librería leaps tienen la finalidad de identificar y seleccionar, de entre todos los predictores disponibles, aquellos que están más relacionados con la variable respuesta y así crear el mejor modelo. Dentro de este grupo se diferencian: best subset selection y stepwise selection (forward, backward e hybrid). Al igual en el método de Step, para un mismo conjunto de datos, no todos tienen por qué converger en un mismo modelo final.
+
+El esquema general de los métodos de subset selection consiste en:
+
+ •	Crear un conjunto de modelos, todos los posibles (best subset) o bien un conjunto de ellos (stepwise), mediante diferentes combinaciones de los predictores disponibles.
+
+ •	Para cada posible estructura de modelo se selecciona el mejor basándose en el estimador del error.
+
+ •	Los modelos finalistas de cada tamaño se comparan entre ellos para identificar el mejor basándose en la estimación del test error.
+
+Para este estudio se va a utilizar el Best Subset Selection consiste en evaluar todos los posibles modelos que se pueden crear por combinación de los predictores disponibles. Se validará el modelo con el método K-Cross-Validation para evaluar los resultados del análisis y garantizar que son independientes de la partición entre datos de entrenamiento y prueba, calculando la media aritmética obtenida de las medidas de evaluación sobre diferentes particiones.
+
+```{r}
+
+set.seed(10)
+grupo <- sample(rep(x = 1:10, length = nrow(datos_delitos_espana_train))) 
+table(grupo)
+
+```
+
+```{r}
+
+predict.regsubsets  <- function(object, newdata, id){
+    # Extraer la fórmula del modelo (variable dependiente ~ predictores)
+    form <- as.formula(object$call[[2]])
+    # Generar una matriz modelo con los nuevos datos y la fórmula
+    mat <- model.matrix(form, newdata)
+    # Extraer los coeficientes del modelo
+    coefi <- coef(object , id = id)
+    # Almacenar el nombre de las variables predictoras del modelo
+    xvars <- names(coefi)
+    # Producto matricial entre los coeficientes del modelo y los valores de
+    # los predictores de las nuevas observaciones para obtener las
+    # predicciones
+    mat[ , xvars] %*% coefi
+}
+
+# Matriz que almacena los test-error estimados. Cada columna representa un
+# modelo. Cada fila es uno de los 10 grupos en los que se han dividido las
+# observaciones
+error_matrix <- matrix(data = NA, nrow = 10, ncol = 9,
+                       dimnames = list(NULL, c(1:9)))
+
+# Bucle en el que se excluye en cada iteración un grupo distinto
+for (k in 1:10) {
+    # Identificación de datos_delitos_espana empleados como training
+    train <- datos_delitos_espana_train[grupo != k, ]
+    # Selección de los mejores modelos para cada tamaño basándose en RSS
+    modelo_subset <- regsubsets(Tasa_Delitos~., data = train, nvmax = 9)
+    
+    # Para cada uno de los modelos "finalistas" se calcula el test-error con
+    # el grupo excluido
+    for (i in 1:9) {
+        test <- datos_delitos_espana_train[grupo == k, ]
+        # Las predicciones del modelo i almacenado en el objeto regsubsets se
+        # extraen mediante la función predict.regsubsets() definida arriba
+        predicciones <- predict.regsubsets(object = modelo_subset,
+                                           newdata = test, id = i)
+        
+        # Cálculo y almacenamiento del MSE para el modelo i
+        error_matrix[k,i] <- mean((test$Tasa_Delitos - predicciones)^2)
+    }
+}
+
+mean_cv_error <- apply(X = error_matrix, MARGIN = 2, FUN = mean)
+which.min(x = mean_cv_error)
+
+```
+
+```{r}
+
+ggplot(data = data.frame(n_predictores = 1:9, mean_cv_error = mean_cv_error),
+       aes(x = n_predictores, y = mean_cv_error)) +
+  geom_line() +
+  geom_point() +
+  geom_point(aes(x = n_predictores[which.min(mean_cv_error)],
+                 y = mean_cv_error[which.min(mean_cv_error)]),
+             colour = "red", size = 3) +
+  scale_x_continuous(breaks = c(0:9)) +
+  theme_bw() +
+  labs(title = "Cross-validation mean error vs número de predictores",
+       x = "número predictores")
+
+```
+El modelo identificado mediante k-Cross-Validation es el formado por 5 predictores que es el que menor cv test error estimado tiene, el gráfico muestra que a partir de 3 predictores la mejora es mínima. Acorde al principio de parsimonia, según el cual se recomienda emplear de entre los modelos buenos el más simple, el modelo más adecuado es el de 3 predictores.
+
+Se analizan los datos del modelo obtenido 
+Con el valor de p-value < 2.2e-16 2.2e-16 se puede decir que existe relación lineal. 
+El R2 nos indica que aproximadamente el 70% de la variabilidad en la variable Tasa_Delitos es explicada por las variables Anio, Gasto, Educacion_Superior
+```{r}
+
+mod <- lm(formula = Tasa_Delitos ~ Anio + Gasto + Educacion_Superior, data = datos_delitos_espana)
+
+summary(mod)
+
+
+```
+
+Se verifica el ajuste de este modelo, pintando sus residuos y verificando que sean normales, viendo su AIC. En este caso los residuos tienen un fuerte sesgo hacia la derecha que indica que el modelo no está siendo muy adecuado.
+```{r}
+anova(mod)
+
+hist(mod$residuals)
+qqnorm(mod$residuals)
+qqline(mod$residuals)
+
+shapiro.test(mod$residuals) 
+
+```
+
+Una vez empleado todas las observaciones de datos_delitos_espana_train, y se calcula el test-MSE empleando el set de datos datos_delitos_espana_test.
+
+```{r}
+
+modelo_subset_final <- regsubsets(Tasa_Delitos ~ ., data = datos_delitos_espana_train, nvmax = 9)
+coef(object = modelo_subset_final, 3)
+
+#Se crea una columna en el dataframe datos_delitos_espana con la predicción de la tasa de delitos del modelo para luego compararlo con el resto de modelos.
+Tasa_Delitos_Pred_Subset <- predict(modelo_subset_final, datos_delitos_espana, id = 3)
+datos_delitos_espana$Tasa_Delitos_Pred_Subset <- c(Tasa_Delitos_Pred_Subset)
+#datos_delitos_espana
+
+test_MSE_subset <- mean((predict(modelo_subset_final, datos_delitos_espana_test, id = 3) -               datos_delitos_espana_test$Tasa_Delitos)^2)
+
+test_MSE_subset
+
+```
+
+## Modelos regularizados
+
+### MODELO RIDGE
+
+Este modelo produce una restricción continua sobre los valores de los coeficientes de cada variable que hace que estos sean más interesantes y potentes como modelos de predicción. El valor natural de los coeficientes es 0, penalizando la adjudicación de valor. En este modelo no se obtienen coeficientes finales nulos, aunque sean muy pequeños. 
+
+```{r}
+
+#RIDGE
+
+
+# La función glmnet() requiere pasar los predictores como matriz y la variable dependiente como vector.
+
+x_datos_delitos_espana_train <- data.matrix(subset(datos_delitos_espana_train, select= - Tasa_Delitos))
+y_datos_delitos_espana_train <- datos_delitos_espana_train$Tasa_Delitos
+
+x_datos_delitos_espana_test <- data.matrix(subset(datos_delitos_espana_test, select= - Tasa_Delitos))
+y_datos_delitos_espana_test <- datos_delitos_espana_test$Tasa_Delitos
+
+
+set.seed(45)
+cv.ridge <- cv.glmnet(x_datos_delitos_espana_train, y_datos_delitos_espana_train, family='gaussian', alpha=0, parallel=TRUE, standardize=TRUE, type.measure='mse')
+
+coef(cv.ridge)
+predicciones <- predict(cv.ridge, s = cv.ridge$lambda.min, newx = x_datos_delitos_espana_test)
+
+
+#Se crea una columna en el dataframe datos_delitos_espana con la predicción de la tasa de delitos del modelo para luego compararlo con el resto de modelos.
+datos_delitos_espana$Tasa_Delitos_Pred_Ridge <- c(predicciones)
+#datos_delitos_espana
+
+test_MSE_ridge <- mean((predicciones - datos_delitos_espana_test$Tasa_Delitos)^2)
+test_MSE_ridge
+
+#Se calcula el R2
+r2 <- cv.ridge$glmnet.fit$dev.ratio[which(cv.ridge$glmnet.fit$lambda == cv.ridge$lambda.min)]
+r2
+
+```
+Se analizan los datos del modelo obtenido 
+El R2 nos indica que aproximadamente el 75% de la variabilidad en la variable Tasa_Delitos es explicada por las variables Anio, PIB, Gasto, Numero_Parados, Numero_habitantes, Tasa_Paro, Inferior_2_etapa_Secundaria, X2_etapa_Secundaria, Educacion_Superior
+```{r}
+
+mod <- lm(formula = Tasa_Delitos ~ Anio + PIB + Gasto + Numero_Parados + Numero_habitantes + Tasa_Paro + Inferior_2_etapa_Secundaria + X2_etapa_Secundaria + Educacion_Superior, data = datos_delitos_espana)
+
+summary(mod)
+
+
+```
+
+Se verifica el ajuste de este modelo, pintando sus residuos y verificando que sean normales, viendo su AIC. En este caso los residuos tienen un fuerte sesgo hacia la derecha que indica que el modelo no está siendo muy adecuado.
+```{r}
+anova(mod)
+
+hist(mod$residuals)
+qqnorm(mod$residuals)
+qqline(mod$residuals)
+
+shapiro.test(mod$residuals) 
+
+```
+
+
+### MODELO LASSO
+
+Este modelo produce una restricción continua sobre los valores de los coeficientes de cada variable que hace que estos sean más interesantes y potentes como modelos de predicción. El valor natural de los coeficientes es 0, penalizando la adjudicación de valor. A diferencia del modelo de Ridge este modelo establece coeficientes finales con valor nulo (los que no son importantes).
+
+```{r}
+
+#LASSO
+
+set.seed(45)
+
+cv.lasso <- cv.glmnet(x_datos_delitos_espana_train, y_datos_delitos_espana_train, family='gaussian', alpha=1, parallel=TRUE, standardize=TRUE, type.measure='mse')
+
+coef(cv.lasso)
+predicciones <- predict(cv.lasso, s = cv.lasso$lambda.min, newx = x_datos_delitos_espana_test)
+
+
+#Se crea una columna en el dataframe datos_delitos_espana con la predicción de la tasa de delitos del modelo para luego compararlo con el resto de modelos.
+datos_delitos_espana$Tasa_Delitos_Pred_Lasso <- c(predicciones)
+#datos_delitos_espana
+
+test_MSE_lasso  <- mean((predicciones - datos_delitos_espana_test$Tasa_Delitos)^2)
+test_MSE_lasso 
+
+#Se calcula el R2
+r2 <- cv.lasso$glmnet.fit$dev.ratio[which(cv.lasso$glmnet.fit$lambda == cv.lasso$lambda.min)]
+r2
+
+```
+
+Se analizan los datos del modelo obtenido 
+El R2 nos indica que aproximadamente el 73% de la variabilidad en la variable Tasa_Delitos es explicada por las variables Anio, Gasto, Tasa_Paro, X2_etapa_Secundaria, Educacion_Superior
+```{r}
+
+mod <- lm(formula = Tasa_Delitos ~ Anio + Gasto + Tasa_Paro + X2_etapa_Secundaria + Educacion_Superior, data = datos_delitos_espana)
+
+summary(mod)
+
+
+```
+
+Se verifica el ajuste de este modelo, pintando sus residuos y verificando que sean normales, viendo su AIC. En este caso los residuos tienen un fuerte sesgo hacia la derecha que indica que el modelo no está siendo muy adecuado.
+```{r}
+anova(mod)
+
+hist(mod$residuals)
+qqnorm(mod$residuals)
+qqline(mod$residuals)
+
+shapiro.test(mod$residuals) 
+
+```
+
+
+### MODELO ELASTIC NET
+
+Este modelo es un término medio entre el modelo de Ridge y el de Lasso. Esto permite generar un modelo en el que solo algunos de los coeficientes sean no nulos, manteniendo las propiedades de regularización de Ridge. El parámetro alpha regula el peso dado a la regularización impuesta por Ridge y por Lasso. Desde este punto de vista Elastic Net es un superconjunto de ambos modelos.
+
+Para determinar el valor de alpha se ha probado con varios valores, obteniendo cuyo valor R2 sea mayor, en este caso para alpha = 0.1 R2 es  0.7340348
+
+```{r}
+
+#Elastic net
+
+
+set.seed(45)
+
+cv.elastic_net <- cv.glmnet(x_datos_delitos_espana_train, y_datos_delitos_espana_train, family='gaussian', alpha=0.1, parallel=TRUE, standardize=TRUE, type.measure='mse')
+
+coef(cv.elastic_net)
+predicciones <- predict(cv.elastic_net, s = cv.elastic_net$lambda.min, newx = x_datos_delitos_espana_test)
+
+
+#Se crea una columna en el dataframe datos_delitos_espana con la predicción de la tasa de delitos del modelo para luego compararlo con el resto de modelos.
+datos_delitos_espana$Tasa_Delitos_Pred_Elastic <- c(predicciones)
+#datos_delitos_espana
+
+test_MSE_elastic  <- mean((predicciones - datos_delitos_espana_test$Tasa_Delitos)^2)
+test_MSE_elastic 
+
+#Se calcula el R2
+r2 <- cv.elastic_net$glmnet.fit$dev.ratio[which(cv.elastic_net$glmnet.fit$lambda == cv.elastic_net$lambda.min)]
+r2
+
+```
+
+En este caso el R2 nos indica que aproximadamente el 73% y no se hace análisis de las distribución del modelo porque tiene los mismos parámetros que el modelo de Lasso.
+
+
+
+Para los métodos de Ridge, Lasso y Elastic Net consiguen, empleando sus respectivos valores óptimos de λ, reducir el MSE (test error) a unos niveles muy parecidos. La ventaja del modelo final obtenido por Lasso Y Elastic Net es que es mucho más simple ya que contiene únicamente 5 predictores.
+```{r}
+
+par(mfrow = c(2,2))
+plot(cv.ridge,ylab = "Mean Square Error Ridge" )
+abline(h = 120000)
+plot(cv.lasso,ylab = "Mean Square Error Lasso")
+abline(h = 120000)
+plot(cv.elastic_net,ylab = "Mean Square Error Elastic Net")
+abline(h = 120000)
+
+```
+
+
+
+```{r}
+
+metodo <- c("OLS","Subset Selection", "Ridge", "Lasso", "Elastic Net")
+test_MSE <- c(test_MSE_OLS, test_MSE_subset, test_MSE_ridge, test_MSE_lasso,
+              test_MSE_elastic)
+resultados <- data.frame(metodo, test_MSE)
+resultados
+
+```
+
+```{r}
+
+ggplot(data = resultados, aes(x = reorder(metodo, test_MSE),
+                              y = sqrt(test_MSE))) +
+geom_bar(stat = "identity") +
+labs(x = "método de regresión", y = expression(sqrt("tes-MSR"))) +
+theme_bw()
+```
+
+## CONCLUSIÓN
+
+Ninguno de los modelos obtenidos son demasiado buenos como para predecir la tasa de delicuencia. 
+
+Aún así, entre los resultados obtenidos, el que consigue mayor precisión (menor test-MSE) es Ridge regression. Cabe destacar el modelo OLS, donde se obtiene un elevado test-MSE, siendo el peor modelo de todos con diferencia.
+
+Para poder comparar las predicciones realizadas de cada uno de ellos se ha añadido una columna al dataframe datos_delitos_espana con las predicciones de cada uno de los modelos, aunque como ya he comentado, ninguno de ellos es lo bastante fiable.
+
+
+```{r}
+
+datos_delitos_espana
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
